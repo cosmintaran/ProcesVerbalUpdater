@@ -15,5 +15,8 @@ namespace PvUpdater
 
         [Option('d', "data", Required = true, HelpText = "Data")]
         public string Data { get; set; } = string.Empty;
+
+        [Option('b', "ocpi", Required = true, HelpText = "Birou OCPI ex: Timis sau Caras")]
+        public string OCPI { get; set; } = "Timis";
     }
 }

@@ -6,6 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
+
 //using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Word = Microsoft.Office.Interop.Word;
@@ -28,27 +30,27 @@ namespace PvUpdater
             if (!ValidateArguments(args))
                 return;
 
-            var (startNumber, path, output ,data) = ParseArguments(args);
+            var (startNumber, path, output ,data, birou) = ParseArguments(args);
             if (startNumber < 1 && !ConfirmRestart(startNumber))
                 return;
 
-            await ProcessFilesAsync(startNumber, data, path, output).ConfigureAwait(false);
+            await ProcessFilesAsync(startNumber, data, path, output, birou).ConfigureAwait(false);
 
             Log.Information("Application is closing....");
             Log.CloseAndFlush();
         }
 
-        private static async Task ProcessFilesAsync(int startNumber, DateTime data, string path, string output)
+        private static async Task ProcessFilesAsync(int startNumber, DateTime data, string path, string output, string birou)
         {
             string fileExtension = Path.GetExtension(path);
 
             if (!string.IsNullOrWhiteSpace(fileExtension) && (fileExtension.Equals(".doc") || fileExtension.Equals(".docx")))
             {
-                await ExecuteSingleFileAsync(startNumber, data, path, output);
+                await ExecuteSingleFileAsync(startNumber, data, path, output, birou);
             }
             else if (Directory.Exists(path))
             {
-                await ExecuteMultipleFilesAsync(startNumber, data, path, output);
+                await ExecuteMultipleFilesAsync(startNumber, data, path, output, birou);
             }
             else
             {
@@ -56,7 +58,7 @@ namespace PvUpdater
                 await Task.CompletedTask;
             }
         }
-        private static Task ExecuteSingleFileAsync(int startNumber, DateTime data, string path,string output)
+        private static Task ExecuteSingleFileAsync(int startNumber, DateTime data, string path,string output, string birou)
         {
             return Task.Run(() =>
             {
@@ -64,11 +66,11 @@ namespace PvUpdater
                 {
                     Visible = false,
                 };
-                ProcessSingleFile(ref startNumber, data, path, wordApp, output);
+                ProcessSingleFile(startNumber, data, path, wordApp, output, birou);
             });
         }
 
-        private static Task ExecuteMultipleFilesAsync(int startNumber, DateTime data, string path, string output)
+        private static Task ExecuteMultipleFilesAsync(int startNumber, DateTime data, string path, string output, string birou)
         {
             return Task.Run(() =>
             {
@@ -79,16 +81,55 @@ namespace PvUpdater
 
                 try
                 {
-                    bool hasOne = false;
-                    foreach (var filePath in Directory.EnumerateFiles(path))
+
+                    var files = Directory.GetFiles(path, "*.*")
+                                .Where(file => file.EndsWith(".docx", StringComparison.OrdinalIgnoreCase) ||
+                                               file.EndsWith(".doc", StringComparison.OrdinalIgnoreCase))
+                                .ToArray();
+
+                    if(files.Length == 0)
                     {
-                        if (!filePath.EndsWith(".doc", StringComparison.CurrentCultureIgnoreCase) &&
-                        !filePath.EndsWith(".docx", StringComparison.CurrentCultureIgnoreCase)) continue;
-                        ProcessSingleFile(ref startNumber, data, filePath, wordApp, output);
-                        hasOne = true;
-                        if (!hasOne)
-                            Log.Warning("No word files fond at location {path}!", path);
+                        Log.Error("No word files fond at location {path}!", path);
                     }
+
+                    bool allFilesHaveNumbers = files.All(file =>
+                    {
+                        var fileName = Path.GetFileNameWithoutExtension(file);
+                        return Regex.IsMatch(fileName, @"\d+");
+                    });
+
+                    if (allFilesHaveNumbers)
+                    {
+                        var sortedFiles = files.OrderBy(file =>
+                                            {
+                                                var match = Regex.Match(Path.GetFileNameWithoutExtension(file), @"\d+");
+                                                return match.Success ? int.Parse(match.Value) : int.MaxValue;
+                                            }).ToArray();
+
+                        foreach (var filePath in sortedFiles)
+                        {
+                            var strNr = Path.GetFileNameWithoutExtension(filePath);
+                            if(int.TryParse(strNr, out var nr))
+                            {
+                                ProcessSingleFile(nr, data, filePath, wordApp, output, birou);
+                            }
+                            else
+                            {
+                                Log.Error("File name is not a number {path}! Document was skipped!", path);
+                            }
+
+                        }
+
+                    }
+                    else
+                    {
+                        foreach (var filePath in files)
+                        {
+                            ProcessSingleFile(startNumber, data, filePath, wordApp, output, birou);
+                            ++startNumber;
+                        }
+                    }
+   
                 }
                 finally
                 {
@@ -97,43 +138,43 @@ namespace PvUpdater
             });
         }
 
-        private static void ProcessSingleFile(ref int startNumber, DateTime data, string path, Word.Application wordApp, string output)
+        private static void ProcessSingleFile(int startNumber, DateTime data, string path, Word.Application wordApp, string output, string birou)
         {
             Log.Information("Processing document {document}....", Path.GetFileName(path));
             Word.Document doc = null;
             try
             {
+                Word.Paragraph firstParagraph = null;
+                string stringToReplace = null;
+
                 doc = wordApp.Documents.Open(path, ReadOnly: true);
-                var firstParagraph = FindParagraphByText(doc, paragraph);
-                if (firstParagraph == null)
+                if (!string.IsNullOrWhiteSpace(birou) && birou.IndexOf("timis", StringComparison.OrdinalIgnoreCase) > -1)
                 {
-                    Log.Warning("Document:{doc} cannot be processed because the format is not as expected.\n" +
-                        "e.g.{paragraph}    {textToReplace}!", Path.GetFileName(path), paragraph, textToReplace);
-                    return;
+                    firstParagraph = GetFirstNrPAragraph(doc);
+                    if (firstParagraph == null)
+                    {
+                        Log.Warning("Document:{doc} cannot be processed because the format is not as expected.\n" +
+                            "{textToReplace}!", Path.GetFileName(path), textToReplace);
+                        return;
+                    }
+
+                    stringToReplace = GetStringToReplaceFromParagraph(firstParagraph);
+                }
+                else
+                {
+                    firstParagraph = FindParagraphByText(doc, paragraph);
+                    if (firstParagraph == null)
+                    {
+                        Log.Warning("Document:{doc} cannot be processed because the format is not as expected.\n" +
+                            "{textToReplace}!", Path.GetFileName(path), textToReplace);
+                        return;
+
+                    }
+
+                    stringToReplace = GetStringToReplaceFromParagraph(firstParagraph);
                 }
 
-                ReadOnlySpan<char> elementToSearch = stackalloc[] { 'N', 'r', '.' };
-                ReadOnlySpan<char> dataElem = stackalloc[] { 'd', 'a', 't', 'a' };
-                var spanOfParagraph = firstParagraph.Range.Text.AsSpan();
-                var indexOf = spanOfParagraph.IndexOf(elementToSearch);
-                var slice = spanOfParagraph.Slice(indexOf);
-                if(!slice.Contains(dataElem,StringComparison.CurrentCultureIgnoreCase))
-                {
-                    Log.Warning("Document:{doc} cannot be processed because the format is not as expected.\n" +
-                        "e.g.{textToReplace}!", Path.GetFileName(path), textToReplace);
-                    return;
-                }
-                var stringToReplace = slice.ToString();
-
-                //if (!regex.IsMatch(slice.ToString()))
-                //{
-                //    Log.Warning("Document:{doc} cannot be processed because the format is not as expected.\n" +
-                //        "e.g.{textToReplace}", Path.GetFileName(path), textToReplace);
-                //    return;
-                //}
-
-                StringBuilder stringBuilder = NumberBuilder(ref startNumber, data);
-
+                StringBuilder stringBuilder = NumberBuilder(startNumber, data, birou);
                 firstParagraph.Range.Find.Execute(FindText: stringToReplace, ReplaceWith: stringBuilder.ToString(), Replace: Word.WdReplace.wdReplaceOne);
 
                 if (string.IsNullOrEmpty(output))
@@ -159,6 +200,24 @@ namespace PvUpdater
                 CloseWordObjects(null, doc);
             }
         }
+
+        private static string GetStringToReplaceFromParagraph(Word.Paragraph firstParagraph)
+        {
+            ReadOnlySpan<char> elementToSearch = stackalloc[] { 'N', 'r', '.' };
+            ReadOnlySpan<char> dataElem = stackalloc[] { 'd', 'a', 't', 'a' };
+            var spanOfParagraph = firstParagraph.Range.Text.AsSpan();
+            var indexOf = spanOfParagraph.IndexOf(elementToSearch);
+            var slice = spanOfParagraph.Slice(indexOf);
+            //if(!slice.Contains(dataElem,StringComparison.CurrentCultureIgnoreCase))
+            //{
+            //    Log.Warning("Document:{doc} cannot be processed because the format is not as expected.\n" +
+            //        "e.g.{textToReplace}!", Path.GetFileName(path), textToReplace);
+            //    return;
+            //}
+            var stringToReplace = slice.Trim().ToString();
+            return stringToReplace;
+        }
+
         private static void SetApplicationCulture()
         {
             CultureInfo romanianCulture = new CultureInfo("ro-RO");
@@ -186,13 +245,14 @@ namespace PvUpdater
             return true;
         }
 
-        private static (int StartNumber, string Path, string ouput,DateTime Data) ParseArguments(string[] args)
+        private static (int StartNumber, string Path, string ouput,DateTime Data, string birouOCPI) ParseArguments(string[] args)
         {
             int startNumber = 1;
             string path = string.Empty;
             string outPut = string.Empty;
             DateTime data = DateTime.Now;
-
+            string birou = string.Empty;
+            
             string[] validFormats = { "MM/dd/yyyy", "dd/MM/yyyy", "d/M/yyyy" };
 
             try
@@ -203,6 +263,7 @@ namespace PvUpdater
                         startNumber = o.StartNumar;
                         path = o.Path;
                         outPut = o.OutPut;
+                        birou = string.IsNullOrWhiteSpace(o.OCPI) ? "Timis" : o.OCPI;
 
                         if (!DateTime.TryParseExact(o.Data, validFormats, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out data))
                         {
@@ -216,7 +277,7 @@ namespace PvUpdater
                 Log.Fatal(ex, "Fatal error occurred: {ErrorMessage}!", ex.Message);
             }
 
-            return ValueTuple.Create(startNumber, path, outPut, data);
+            return ValueTuple.Create(startNumber, path, outPut, data, birou);
         }
 
         private static bool ConfirmRestart(int startNumber)
@@ -225,16 +286,29 @@ namespace PvUpdater
             return Console.ReadKey().Key == ConsoleKey.Y;
         }
 
-        private static StringBuilder NumberBuilder(ref int startNumber, DateTime data)
+        private static StringBuilder NumberBuilder(int startNumber, DateTime data, string ocpi)
         {
             StringBuilder stringBuilder = new StringBuilder();
-            stringBuilder.Append("Nr. ");
-            stringBuilder.AppendFormat("{0:D2} ", startNumber++);
-            stringBuilder.AppendFormat("data . ");
-            stringBuilder.AppendFormat("{0:D2}.", data.Day);
-            stringBuilder.AppendFormat("{0:D2}.", data.Month);
-            stringBuilder.AppendFormat("{0:D4}", data.Year);
-            stringBuilder.Append("    ");
+            if (string.IsNullOrWhiteSpace(ocpi) || ocpi.StartsWith("Caras"))
+            {
+                stringBuilder.Append("Nr. ");
+                stringBuilder.AppendFormat("{0:D2} ", startNumber);
+                stringBuilder.AppendFormat("data . ");
+                stringBuilder.AppendFormat("{0:D2}.", data.Day);
+                stringBuilder.AppendFormat("{0:D2}.", data.Month);
+                stringBuilder.AppendFormat("{0:D4}", data.Year);
+                stringBuilder.Append("    ");
+            }
+            if (ocpi.StartsWith("Timis"))
+            {
+                stringBuilder.Append("Nr. ");
+                stringBuilder.AppendFormat("{0:D2} ", startNumber);
+                stringBuilder.Append('/');
+                stringBuilder.AppendFormat("{0:D2}.", data.Day);
+                stringBuilder.AppendFormat("{0:D2}.", data.Month);
+                stringBuilder.AppendFormat("{0:D4}", data.Year);
+                stringBuilder.Append(" ");
+            }
             return stringBuilder;
         }
 
@@ -270,6 +344,33 @@ namespace PvUpdater
         {
             Log.Error("Error while processing file {file}. Exception:{exception}!", Path.GetFileName(filePath), ex.Message);
         }
+
+        static Word.Paragraph FindParagraphByPattern(Word.Document doc, string pattern)
+        {
+            foreach (Word.Paragraph paragraph in doc.Paragraphs)
+            {
+                if (Regex.IsMatch(paragraph.Range.Text, pattern, RegexOptions.IgnoreCase))
+                {
+                    return paragraph;
+                }
+            }
+
+            return null;
+        }
+
+        private static Word.Paragraph GetFirstNrPAragraph(Word.Document doc)
+        {
+            foreach (Word.Paragraph paragraph in doc.Paragraphs)
+            {
+                string text = paragraph.Range.Text.Trim();
+                if (text.StartsWith("Nr.", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    return paragraph;
+                }
+            }
+            return null;
+        }
+
     }
 
 }

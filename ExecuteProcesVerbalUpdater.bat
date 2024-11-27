@@ -7,6 +7,8 @@ REM directorul sursa
 set "sourceDirectory=c:\Users\cosmi\source\repos\PvUpdater"
 REM Directorul unde se vor salva noile documente
 set "destinationDirectory=c:\Users\cosmi\source\repos\PvUpdater\Output"
+REM Biroul OCPI Timis sau Caras default timis.
+set "birouOCPI" = "timis"
 REM Numarul de start
 set "startNumber=1"
 REM Data procesului verval
@@ -22,7 +24,7 @@ if not exist "%executable%" (
 )
 
 REM Rulează fișierul executabil cu parametrii
-"%executable%" -n %startNumber% -d %date% -p "%sourceDirectory%" -o "%destinationDirectory%"
+"%executable%" -n %startNumber% -d %date% -p "%sourceDirectory%" -o "%destinationDirectory%" -b "%birouOCPI%"
 
 exit /b 0
 
